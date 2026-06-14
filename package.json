@@ -1,0 +1,13 @@
+{
+  "name": "task-manager-api",
+  "version": "1.0.0",
+  "description": "RESTful API for Task Manager using Express and MongoDB",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mongoose": "^8.0.0"
+  }
+}
