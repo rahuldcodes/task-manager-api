@@ -1,72 +1,101 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const app = express();
-app.use(express.json()); // JSON data read karne ke liye middleware
+app.use(express.json());
 
-// Connection to MongoDB Atlas (Yeh automatic Render se variable utha lega)
+// 1. MongoDB Connection
 const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET || "MeraSuperSecretKey123"; // Token sign karne ke liye secret
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log("MongoDB connected successfully! 🍃"))
   .catch((err) => console.log("Database connection error ❌:", err));
 
-// Task Model (Schema)
-const TaskSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  description: { type: String },
-  completed: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now }
+// 2. User Schema & Model
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
 });
 
-const Task = mongoose.model('Task', TaskSchema);
+// Password Hashing Middleware (Database mein save hone se pehle hash karega)
+UserSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 10);
+  next();
+});
 
-// --- REST ENDPOINTS (CRUD) ---
+const User = mongoose.model('User', UserSchema);
 
-// 1. [GET] Fetch all tasks
-app.get('/tasks', async (req, res) => {
+// 3. Authentication Endpoints
+
+// 👉 [POST] SIGNUP: Register a new user
+app.post('/signup', async (req, res) => {
   try {
-    const tasks = await Task.find();
-    res.json(tasks);
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
+
+    // Check if user already exists
+    const userExists = await User.findOne({ email });
+    if (userExists) return res.status(400).json({ error: "User already exists!" });
+
+    const newUser = new User({ email, password });
+    await newUser.save();
+    res.status(201).json({ message: "User registered successfully! 🎉" });
   } catch (err) {
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Signup failed" });
   }
 });
 
-// 2. [POST] Create a new task
-app.post('/tasks', async (req, res) => {
+// 👉 [POST] LOGIN: Verify credentials & issue JWT
+app.post('/login', async (req, res) => {
   try {
-    const { title, description } = req.body;
-    if (!title) return res.status(400).json({ error: "Title is required!" });
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    
+    // Check user and compare password
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ error: "Invalid email or password ❌" });
+    }
 
-    const newTask = new Task({ title, description });
-    await newTask.save();
-    res.status(201).json(newTask);
+    // Issue JWT Token (Valid for 1 hour)
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ message: "Login successful! 🔓", token });
   } catch (err) {
-    res.status(500).json({ error: "Failed to create task" });
+    res.status(500).json({ error: "Login failed" });
   }
 });
 
-// 3. [PUT] Update a task by ID
-app.put('/tasks/:id', async (req, res) => {
+// 4. Auth Middleware (Security Guard)
+function authMiddleware(req, res, next) {
+  // Header se token nikalna (Format: Bearer <TOKEN>)
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Access Denied! No token provided. 🛑" });
+
   try {
-    const updatedTask = await Task.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!updatedTask) return res.status(404).json({ error: "Task not found" });
-    res.json(updatedTask);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded; // Decoded userId ko request mein attach kar rahe hain
+    next(); // Aage jaane do
   } catch (err) {
-    res.status(500).json({ error: "Failed to update task" });
+    res.status(400).json({ error: "Invalid or expired token ❌" });
+  }
+}
+
+// 👉 [GET] PROTECTED PROFILE: Middleware protected route
+app.get('/profile', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password'); // Password chhupa kar data bhejenge
+    res.json({ message: "Welcome to your secure profile! 🛡️", user });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch profile" });
   }
 });
 
-// 4. [DELETE] Delete a task by ID
-app.delete('/tasks/:id', async (req, res) => {
-  try {
-    const deletedTask = await Task.findByIdAndDelete(req.params.id);
-    if (!deletedTask) return res.status(404).json({ error: "Task not found" });
-    res.status(200).json({ message: "Task deleted successfully!" });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to delete task" });
-  }
+// Welcome Route for Home '/'
+app.get('/', (req, res) => {
+  res.send("Authentication API is running live! 🚀");
 });
 
 // Start Server
